@@ -1,0 +1,181 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS API Gateway Discovery Lambda Function with Cross-Account Role'
+
+Parameters:
+  LambdaExecutionRoleName:
+    Type: String
+    Default: 'TreblleDiscoveryLambdaRole'
+    Description: 'Name for the Lambda execution role'
+  
+  ScheduleExpression:
+    Type: String
+    Default: 'rate(24 hours)'
+    Description: 'Schedule for running the discovery (e.g., rate(24 hours), cron(0 9 * * ? *))'
+  
+  TargetAccountId:
+    Type: String
+    Description: 'AWS Account ID to scan for API Gateway APIs'
+    AllowedPattern: '[0-9]{12}'
+    ConstraintDescription: 'Must be a valid 12-digit AWS Account ID'
+  
+  RegionList:
+    Type: CommaDelimitedList
+    Default: 'us-east-1,us-west-2,eu-west-1'
+    Description: 'Comma-separated list of AWS regions to scan (e.g., us-east-1,us-west-2,eu-west-1)'
+  
+  TreblleSDKToken:
+    Type: String
+    NoEcho: true
+    Description: 'Treblle SDK Token (will be sent as x-api-key header with each request)'
+    MinLength: 1
+
+Resources:
+  # Lambda Execution Role
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref LambdaExecutionRoleName
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: TreblleDiscoveryPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - apigateway:GET
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+
+  # Lambda Function
+  APIGatewayDiscoveryFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: 'treblle-api-gateway-discovery'
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 600  # 10 minutes
+      MemorySize: 512
+      Architectures:
+        - arm64
+      Environment:
+        Variables:
+          TREBLLE_SDK_TOKEN: !Ref TreblleSDKToken
+          TARGET_ACCOUNT_ID: !Ref TargetAccountId
+          SCAN_REGIONS: !Join [',', !Ref RegionList]
+      Code:
+        ZipFile: |
+          // Lambda function code will be uploaded separately
+          exports.handler = async (event) => {
+            return {
+              statusCode: 200,
+              body: JSON.stringify('Function code needs to be uploaded')
+            };
+          };
+
+  # EventBridge Rule for Scheduling
+  ScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: 'treblle-api-gateway-discovery-schedule'
+      Description: 'Schedule for Treblle API Gateway discovery Lambda'
+      ScheduleExpression: !Ref ScheduleExpression
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt APIGatewayDiscoveryFunction.Arn
+          Id: 'APIGatewayDiscoveryTarget'
+
+  # Permission for EventBridge to invoke Lambda
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref APIGatewayDiscoveryFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ScheduleRule.Arn
+
+  # CloudWatch Log Group
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${APIGatewayDiscoveryFunction}'
+      RetentionInDays: 30
+
+Outputs:
+  LambdaFunctionArn:
+    Description: 'ARN of the Lambda function'
+    Value: !GetAtt APIGatewayDiscoveryFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-LambdaFunctionArn'
+  
+  TargetAccountId:
+    Description: 'Account ID being scanned'
+    Value: !Ref TargetAccountId
+    Export:
+      Name: !Sub '${AWS::StackName}-TargetAccountId'
+  
+  ScanRegions:
+    Description: 'Regions being scanned'
+    Value: !Join [',', !Ref RegionList]
+    Export:
+      Name: !Sub '${AWS::StackName}-ScanRegions'
+  
+  DeploymentInstructions:
+    Description: 'Instructions for updating Lambda code'
+    Value: !Sub 
+      - |
+        TREBLLE API DISCOVERY DEPLOYMENT
+        
+        === STACK DEPLOYED SUCCESSFULLY ===
+        Lambda Function: treblle-api-gateway-discovery
+        Target Account: ${TargetAccountId}
+        Scan Regions: ${RegionListJoined}
+        Treblle SDK Token: [CONFIGURED SECURELY]
+        
+        === UPDATE LAMBDA CODE ===
+        The Lambda function was created with placeholder code.
+        Update it with the latest code from Treblle:
+        
+        curl -L -o lambda-latest.zip https://assets.treblle.com/aws-discovery/lambda-latest.zip
+        aws lambda update-function-code --function-name treblle-api-gateway-discovery --zip-file fileb://lambda-latest.zip
+        
+        === CONFIGURATION ===
+        Mode: Single Account Discovery
+        Account: ${TargetAccountId}
+        Regions: ${RegionListJoined}
+        Endpoint: https://autodiscovery.treblle.com/api/v1/aws
+        Authentication: SDK Token sent as x-api-key header
+        Batch Size: 50 APIs per request
+        Schedule: ${ScheduleExpression}
+        
+        === PERFORMANCE OPTIMIZATIONS ===
+        ✓ Parallel region scanning for faster execution
+        ✓ Connection pooling for efficient HTTPS requests  
+        ✓ SDK client reuse and parallel API discovery
+        ✓ Region validation with comprehensive AWS region support
+        ✓ Optimized memory (512MB) and timeout (10 minutes)
+        
+        === NEXT STEPS ===
+        1. Update Lambda code using the command above
+        2. Test the function: aws lambda invoke --function-name treblle-api-gateway-discovery response.json
+        3. The function will run automatically based on your schedule
+        
+        === FOR MULTIPLE ACCOUNTS ===
+        Deploy this stack in each target account you want to monitor:
+        aws cloudformation deploy --template-file template.yaml --stack-name treblle-discovery --parameter-overrides TargetAccountId=ACCOUNT-ID TreblleSDKToken=TOKEN RegionList=us-east-1,us-west-2 --capabilities CAPABILITY_NAMED_IAM
+      - RegionListJoined: !Join [',', !Ref RegionList]
