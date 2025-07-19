@@ -1,7 +1,7 @@
 // AWS SDK v3 imports (available in Node.js 22.x runtime)
 const { APIGatewayClient, GetRestApisCommand, GetStagesCommand } = require('@aws-sdk/client-api-gateway');
 const { ApiGatewayV2Client, GetApisCommand, GetStagesCommand: GetStagesV2Command } = require('@aws-sdk/client-apigatewayv2');
-const { STSClient, GetCallerIdentityCommand, AssumeRoleCommand } = require('@aws-sdk/client-sts');
+const { STSClient, GetCallerIdentityCommand } = require('@aws-sdk/client-sts');
 const https = require('https');
 
 // Create HTTPS agent with connection pooling
@@ -14,12 +14,9 @@ const httpsAgent = new https.Agent({
 });
 
 // Configuration
-const DISCOVERY_ENDPOINT = 'https://autodiscovery.treblle.com/api/v1/aws';
 const BATCH_SIZE = 50; // Number of APIs to send per batch
 const TREBLLE_SDK_TOKEN = process.env.TREBLLE_SDK_TOKEN;
-const TARGET_ACCOUNT_ID = process.env.TARGET_ACCOUNT_ID;
 const SCAN_REGIONS = process.env.SCAN_REGIONS;
-const CROSS_ACCOUNT_ROLE_NAME = process.env.CROSS_ACCOUNT_ROLE_NAME || 'TreblleDiscoveryRole';
 
 // Initialize AWS clients
 const stsClient = new STSClient({});
@@ -41,18 +38,7 @@ exports.handler = async (event) => {
     
     try {
 
-        // Validate environment variables
-        if (!TARGET_ACCOUNT_ID) {
-            console.error('TARGET_ACCOUNT_ID environment variable is required');
-            return {
-                statusCode: 500,
-                body: JSON.stringify({
-                    error: 'Configuration error',
-                    message: 'TARGET_ACCOUNT_ID environment variable is required'
-                })
-            };
-        }
-        
+        // Validate environment variables  
         if (!SCAN_REGIONS) {
             console.error('SCAN_REGIONS environment variable is required');
             return {
@@ -77,24 +63,17 @@ exports.handler = async (event) => {
                 })
             };
         }
-        console.log(`Will scan target account ${TARGET_ACCOUNT_ID} in ${validRegions.length} regions: ${validRegions.join(', ')}`);
-        
-        // Get credentials once for efficiency
-        let credentials;
+        // Get current account ID (the account where Lambda is deployed)
         const currentAccountId = await getCurrentAccountId();
+        console.log(`Will scan current account ${currentAccountId} in ${validRegions.length} regions: ${validRegions.join(', ')}`);
         
-        if (TARGET_ACCOUNT_ID === currentAccountId) {
-            // Use current credentials for the same account (Lambda execution role)
-            credentials = null; // Use default credentials
-        } else {
-            // Get credentials for cross-account access (reuse across regions)
-            credentials = await assumeRole(TARGET_ACCOUNT_ID, 'us-east-1'); // Use any region for role assumption
-        }
+        // Use default credentials since we're scanning the current account
+        const credentials = null;
         
         // Scan all regions in parallel
         console.log(`Starting parallel scan of ${validRegions.length} regions...`);
         const scanPromises = validRegions.map(region => 
-            scanRegion(TARGET_ACCOUNT_ID, region, credentials)
+            scanRegion(currentAccountId, region, credentials)
         );
         
         const results = await Promise.allSettled(scanPromises);
@@ -112,10 +91,10 @@ exports.handler = async (event) => {
                 allApis.push(...apis);
                 totalApis += apis.length;
                 successfulRegions++;
-                console.log(`✓ Found ${apis.length} APIs in ${TARGET_ACCOUNT_ID}/${region}`);
+                console.log(`✓ Found ${apis.length} APIs in ${currentAccountId}/${region}`);
             } else {
                 failedRegions++;
-                console.error(`✗ Error scanning ${TARGET_ACCOUNT_ID}/${region}:`, result.reason.message);
+                console.error(`✗ Error scanning ${currentAccountId}/${region}:`, result.reason.message);
             }
         });
         
@@ -133,7 +112,7 @@ exports.handler = async (event) => {
             body: JSON.stringify({
                 message: 'API discovery completed successfully',
                 totalApis: totalApis,
-                targetAccount: TARGET_ACCOUNT_ID,
+                targetAccount: currentAccountId,
                 regionsScanned: successfulRegions,
                 regionsRequested: validRegions.length,
                 regionsFailed: failedRegions,
@@ -195,28 +174,6 @@ async function getCurrentAccountId() {
     }
 }
 
-// Assume role in target account
-async function assumeRole(accountId, region) {
-    const roleArn = `arn:aws:iam::${accountId}:role/${CROSS_ACCOUNT_ROLE_NAME}`;
-    
-    try {
-        const command = new AssumeRoleCommand({
-            RoleArn: roleArn,
-            RoleSessionName: `TreblleDiscovery-${Date.now()}`
-        });
-        
-        const result = await stsClient.send(command);
-        
-        return {
-            accessKeyId: result.Credentials.AccessKeyId,
-            secretAccessKey: result.Credentials.SecretAccessKey,
-            sessionToken: result.Credentials.SessionToken
-        };
-    } catch (error) {
-        console.error(`Error assuming role in account ${accountId}:`, error.message);
-        throw error;
-    }
-}
 
 // Create API Gateway clients for a region
 function createApiGatewayClients(region, credentials) {
