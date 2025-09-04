@@ -201,6 +201,74 @@ aws cloudformation delete-stack --stack-name treblle-api-discovery
 
 Or delete via AWS Console → CloudFormation → Select stack → Delete
 
+## Security
+
+### AWS Resources Created
+
+This CloudFormation stack creates the following AWS resources:
+
+#### 1. **IAM Role** - `TreblleDiscoveryLambdaRole`
+- **Type:** `AWS::IAM::Role`
+- **Purpose:** Lambda execution role with account-wide API Gateway read access
+- **Attached Policies:**
+  - `arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole`
+  - Custom inline policy: `TreblleDiscoveryPolicy`
+
+#### 2. **Lambda Function** - `treblle-api-gateway-discovery`
+- **Type:** `AWS::Lambda::Function`
+- **Purpose:** API Gateway discovery and external data transmission
+- **Runtime:** `nodejs22.x` on `arm64` architecture
+- **Network Access:** Makes HTTPS calls to `autodiscovery.treblle.com`
+
+#### 3. **EventBridge Rule** - `treblle-api-gateway-discovery-schedule`
+- **Type:** `AWS::Events::Rule`
+- **Purpose:** Scheduled trigger (default: every 24 hours)
+- **Permissions:** Can only invoke the specific Lambda function
+
+#### 4. **Lambda Permission** - `LambdaInvokePermission`
+- **Type:** `AWS::Lambda::Permission`
+- **Purpose:** Allows EventBridge to invoke the Lambda function
+
+#### 5. **CloudWatch Log Group** - `/aws/lambda/treblle-api-gateway-discovery`
+- **Type:** `AWS::Logs::LogGroup`
+- **Purpose:** Function logs (30-day retention)
+
+### Required Permissions for Deployment
+
+#### CloudFormation Deployment Permissions
+- `iam:CreateRole` - Create the Lambda execution role
+- `iam:DeleteRole` - Delete role during stack deletion
+- `iam:GetRole` - Read existing role configuration
+- `iam:AttachRolePolicy` - Attach AWS managed policies to role
+- `iam:PutRolePolicy` - Create inline policies on role
+- `iam:PassRole` - Allow CloudFormation to assign role to Lambda
+- `lambda:CreateFunction` - Create the Lambda function
+- `lambda:UpdateFunctionCode` - Update function code during stack updates
+- `lambda:UpdateFunctionConfiguration` - Modify function settings
+- `lambda:AddPermission` - Grant EventBridge invoke permissions
+- `events:PutRule` - Create EventBridge scheduled rule
+- `events:PutTargets` - Configure Lambda as rule target
+- `logs:CreateLogGroup` - Create CloudWatch log group
+- `logs:PutRetentionPolicy` - Set 30-day log retention
+- `cloudformation:CreateStack` - Create the CloudFormation stack
+- `cloudformation:UpdateStack` - Update stack configuration
+- `cloudformation:DescribeStacks` - Read stack status and outputs
+
+### Specific API Gateway Actions
+
+#### REST API (v1) Access
+- `apigateway:GetRestApis` - List all REST APIs
+- `apigateway:GetStages` - Read stage configurations
+- `apigateway:GetDeployments` - Access deployment history
+- `apigateway:GetResources` - Read API resources
+- `apigateway:GetMethod` - Access method configurations
+
+#### HTTP API (v2) Access
+- `apigatewayv2:GetApis` - List all HTTP APIs
+- `apigatewayv2:GetStages` - Read stage configurations
+- `apigatewayv2:GetRoutes` - Access route definitions
+- `apigatewayv2:GetIntegrations` - Read integration configs
+
 ## Support
 
 - **Treblle Documentation**: [https://docs.treblle.com](https://docs.treblle.com)
